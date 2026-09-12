@@ -1,39 +1,72 @@
 import asyncio
 import logging
 
-import config
 import db
 from client import app, call, user
-from plugins.promotion import scheduler
+
+logger = logging.getLogger(__name__)
 
 logging.basicConfig(
-    level=getattr(logging, config.LOG_LEVEL, logging.INFO),
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger("musicbot")
+
+
+async def scheduler(client):
+    """
+    Background scheduler.
+
+    Keep your existing scheduler implementation here if
+    your repository already has one.
+    """
+    while True:
+        await asyncio.sleep(60)
 
 
 def main():
+    logger.info("Starting M4 Music Bot")
+
+    # Initialize database
     db.init_db()
-    logger.info("Starting music bot")
+
+    # Start user account
     user.start()
+    logger.info("User client started")
+
+    # Start voice chat client
     call.start()
+    logger.info("Voice chat client started")
+
+    # Start bot
     app.start()
-    task = asyncio.create_task(scheduler(app))
+    logger.info("Bot client started")
+
+    # Start background scheduler
+    task = app.loop.create_task(scheduler(app))
+
     try:
         from pyrogram import idle
         idle()
+    except KeyboardInterrupt:
+        logger.info("Stopping bot...")
     finally:
         task.cancel()
+
         try:
             call.stop()
         except Exception:
             pass
+
         try:
             user.stop()
         except Exception:
             pass
-        app.stop()
+
+        try:
+            app.stop()
+        except Exception:
+            pass
+
         logger.info("Bot stopped")
 
 
