@@ -1,7 +1,8 @@
 import sqlite3
 import threading
+import json
 from datetime import datetime, timezone
-from typing import Iterable
+from typing import Iterable, List, Dict, Optional
 
 import config
 
@@ -45,6 +46,11 @@ def init_db():
                 run_at TEXT NOT NULL,
                 message TEXT NOT NULL,
                 created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS music_queues (
+                chat_id INTEGER PRIMARY KEY,
+                queue TEXT NOT NULL,
+                updated_at TEXT NOT NULL
             );
             """
         )
@@ -170,3 +176,42 @@ def get_stats():
             "top_songs": top,
             "most_active_chat": tuple(active_chat) if active_chat else None,
         }
+
+
+# --------------------------------------------------
+# Music Queue Methods
+# --------------------------------------------------
+
+async def get_queue(chat_id: int) -> Optional[List[Dict]]:
+    """Get the music queue for a chat."""
+    with _LOCK, _connect() as conn:
+        row = conn.execute(
+            "SELECT queue FROM music_queues WHERE chat_id=?",
+            (chat_id,),
+        ).fetchone()
+        
+        if row:
+            try:
+                return json.loads(row[0])
+            except json.JSONDecodeError:
+                return []
+        return None
+
+
+async def set_queue(chat_id: int, queue: List[Dict]) -> None:
+    """Save or update the music queue for a chat."""
+    queue_json = json.dumps(queue)
+    with _LOCK, _connect() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO music_queues(chat_id, queue, updated_at) VALUES (?, ?, ?)",
+            (chat_id, queue_json, _now()),
+        )
+
+
+async def clear_queue(chat_id: int) -> None:
+    """Clear the music queue for a chat."""
+    with _LOCK, _connect() as conn:
+        conn.execute(
+            "DELETE FROM music_queues WHERE chat_id=?",
+            (chat_id,),
+        )
