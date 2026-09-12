@@ -1,4 +1,5 @@
-# MGXBOTS Telegram Voice-Chat Music Bot
+# DK Music Bot 
+ Telegram Voice-Chat Music Bot
 
 A single-instance Telegram music bot using Pyrogram + PyTgCalls. The clone system was removed to keep the project simpler and safer.
 
