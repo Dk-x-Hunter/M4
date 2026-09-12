@@ -29,6 +29,8 @@ YDL_OPTS = {
     "fragment_retries": 5,
     "extractor_retries": 5,
     "skip_unavailable_fragments": True,
+    # Auto-extract cookies from Chrome
+    "cookiesfrombrowser": ["chrome"],
     # YouTube-specific options to bypass bot detection
     "extractor_args": {
         "youtube": {
@@ -38,7 +40,7 @@ YDL_OPTS = {
     },
     # Additional headers to avoid being detected as a bot
     "http_headers": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     },
     # Disable DASH to simplify extraction
     "youtube_include_dash_manifest": False,
@@ -109,7 +111,7 @@ async def _extract(query: str):
 
         def extract():
             with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-                logger.info("Starting yt-dlp extraction...")
+                logger.info("Starting yt-dlp extraction with Chrome cookies...")
                 info = ydl.extract_info(search_query, download=False)
                 logger.info("yt-dlp extraction completed")
                 return info
