@@ -30,17 +30,6 @@ jobs:
           pip install --no-cache-dir -r requirements.txt
           pip check
 
-      - name: Create YouTube cookies file
-        env:
-          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
-        run: |
-          if [ -z "$YOUTUBE_COOKIES" ]; then
-            echo "YOUTUBE_COOKIES secret is missing"
-            exit 1
-          fi
-          printf '%s\n' "$YOUTUBE_COOKIES" > cookies.txt
-          chmod 600 cookies.txt
-
       - name: Start bot
         env:
           API_ID: ${{ secrets.API_ID }}
@@ -49,4 +38,5 @@ jobs:
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
           OWNER_ID: ${{ secrets.OWNER_ID }}
           SUDO_USERS: ${{ secrets.SUDO_USERS }}
+          YOUTUBE_COOKIES: ${{ secrets.YOUTUBE_COOKIES }}
         run: python bot.py
