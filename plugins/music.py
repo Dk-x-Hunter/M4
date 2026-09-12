@@ -33,8 +33,9 @@ YDL_OPTS = {
     # YouTube-specific options to bypass bot detection
     "extractor_args": {
         "youtube": {
-            "player_client": ["web"],
+            "player_client": ["web", "android"],
             "player_skip": ["js", "configs"],
+            "oauth_cache": False,
         }
     },
     # Additional headers to avoid being detected as a bot
@@ -47,20 +48,24 @@ YDL_OPTS = {
 
 # Load YouTube cookies from environment variable if available
 YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES")
+cookies_file = None
 
-if YOUTUBE_COOKIES:
+if YOUTUBE_COOKIES and YOUTUBE_COOKIES.strip():
     try:
-        # Create a temporary cookies file from the environment variable
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+        # Create a persistent cookies file (not auto-deleted)
+        cookies_file = os.path.join(os.path.dirname(__file__), '..', 'cookies.txt')
+        os.makedirs(os.path.dirname(cookies_file), exist_ok=True)
+        
+        with open(cookies_file, 'w') as f:
             f.write(YOUTUBE_COOKIES)
-            cookies_file = f.name
         
         YDL_OPTS["cookiefile"] = cookies_file
-        logger.info("YouTube cookies loaded from YOUTUBE_COOKIES environment variable")
+        logger.info("✅ YouTube cookies loaded from YOUTUBE_COOKIES environment variable")
     except Exception as e:
-        logger.warning(f"Failed to load YouTube cookies from environment variable: {e}")
+        logger.error(f"❌ Failed to load YouTube cookies from environment variable: {e}")
+        cookies_file = None
 else:
-    logger.warning("YOUTUBE_COOKIES environment variable not set. YouTube downloads may fail if authentication is required.")
+    logger.warning("⚠️ YOUTUBE_COOKIES environment variable not set or empty. YouTube downloads may fail if authentication is required.")
 
 
 # --------------------------------------------------
@@ -121,15 +126,15 @@ async def _extract(query: str):
         if not query.startswith(("http://", "https://")):
             search_query = f"ytsearch1:{query}"
 
-        logger.info("Extracting audio for query: %s", query)
+        logger.info("🔍 Extracting audio for query: %s", query)
         
         loop = asyncio.get_running_loop()
 
         def extract():
             with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-                logger.info("Starting yt-dlp extraction...")
+                logger.info("⏳ Starting yt-dlp extraction...")
                 info = ydl.extract_info(search_query, download=False)
-                logger.info("yt-dlp extraction completed")
+                logger.info("✅ yt-dlp extraction completed")
                 return info
 
         info = await loop.run_in_executor(None, extract)
@@ -156,7 +161,7 @@ async def _extract(query: str):
                 "yt-dlp did not return a playable audio URL."
             )
 
-        logger.info("Successfully extracted: %s", title)
+        logger.info("✅ Successfully extracted: %s", title)
 
         return {
             "title": title,
@@ -204,7 +209,7 @@ async def _play_next(chat_id: int):
 
     try:
         logger.info(
-            "Playing in chat %s: %s",
+            "🎵 Playing in chat %s: %s",
             chat_id,
             current.get("title", "Unknown title"),
         )
@@ -216,7 +221,7 @@ async def _play_next(chat_id: int):
         )
 
         logger.info(
-            "Now playing in %s: %s",
+            "▶️ Now playing in %s: %s",
             chat_id,
             current.get("title", "Unknown title"),
         )
