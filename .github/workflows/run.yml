@@ -1,7 +1,10 @@
-name: M4 Music Bot
+name: Run Telegram Bot
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   run-bot:
@@ -16,23 +19,23 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Install system dependencies
+      - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-      - name: Install Python dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install TgCrypto
+          pip install --no-cache-dir -r requirements.txt
+          pip check
 
-      - name: Run M4 bot
+      - name: Start bot
         env:
           API_ID: ${{ secrets.API_ID }}
           API_HASH: ${{ secrets.API_HASH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           SESSION_STRING: ${{ secrets.SESSION_STRING }}
           OWNER_ID: ${{ secrets.OWNER_ID }}
-        run: |
-          python bot.py
+          SUDO_USERS: ${{ secrets.SUDO_USERS }}
+        run: python bot.py
