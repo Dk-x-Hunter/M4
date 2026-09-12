@@ -1,177 +1,395 @@
 import asyncio
+import logging
+import os
 from functools import wraps
 
 import yt_dlp
-from pyrogram import Client, filters
+from pyrogram import filters
 from pyrogram.types import Message
-from pytgcalls import filters as call_filters
-from pytgcalls.types import MediaStream, StreamEnded
+from pytgcalls import PyTgCalls
+from pytgcalls.types import AudioPiped, MediaStream
+from pytgcalls.types.input_stream import AudioVideoPiped
 
-import config
-import db
-from client import QUEUES, call
+from core.config import Config
+from core.mongo import db
+
+
+LOGGER = logging.getLogger(__name__)
+
+# --------------------------------------------------
+# YouTube / yt-dlp configuration
+# --------------------------------------------------
+
+COOKIE_FILE = "cookies.txt"
 
 YDL_OPTS = {
-    "format": "bestaudio/best",
+    "format": "bestaudio[ext=m4a]/bestaudio/best",
     "noplaylist": True,
     "quiet": True,
     "no_warnings": True,
     "default_search": "ytsearch1",
-    "socket_timeout": 15,
+    "socket_timeout": 30,
+    "retries": 3,
+    "fragment_retries": 3,
+    "extractor_retries": 3,
+    "skip_unavailable_fragments": True,
+    "extractor_args": {
+        "youtube": {
+            "player_client": ["android", "web"],
+        }
+    },
 }
 
+# Use cookies only when the file actually exists.
+# This prevents yt-dlp from crashing if cookies.txt is absent.
+if os.path.isfile(COOKIE_FILE):
+    YDL_OPTS["cookiefile"] = COOKIE_FILE
 
-def gated(func):
+
+# --------------------------------------------------
+# Global variables
+# --------------------------------------------------
+
+CALLS = PyTgCalls(Config.APP)
+
+
+# --------------------------------------------------
+# Helpers
+# --------------------------------------------------
+
+def admin_only(func):
     @wraps(func)
-    async def wrapper(client, message: Message):
+    async def wrapper(client, message: Message, *args, **kwargs):
         if not message.from_user:
             return
-        if message.chat.type.value == "private":
-            return await message.reply_text("Use this inside a group voice chat.")
-        if not (db.is_sudo(message.from_user.id) or db.is_authorized_chat(message.chat.id)):
-            return await message.reply_text("🚫 This group isn't authorized. Ask the owner to run /authorize here.")
-        return await func(client, message)
+
+        if message.chat and message.chat.type:
+            user_id = message.from_user.id
+
+            # Allow configured owner
+            if user_id == Config.OWNER_ID:
+                return await func(client, message, *args, **kwargs)
+
+            # Check database admins
+            try:
+                admins = await db.get_admins(message.chat.id)
+
+                if user_id not in admins:
+                    return await message.reply_text(
+                        "❌ You are not allowed to use this command."
+                    )
+            except Exception:
+                LOGGER.exception("Failed to check admin permissions")
+                return await message.reply_text(
+                    "⚠️ Could not verify your permissions."
+                )
+
+        return await func(client, message, *args, **kwargs)
+
     return wrapper
 
 
-def _extract(query: str):
-    with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-        info = ydl.extract_info(query, download=False)
-        if info and info.get("entries"):
-            info = next((x for x in info["entries"] if x), None)
-        if not info or not info.get("url"):
-            raise ValueError("No playable audio was found.")
-        return {"title": info.get("title") or "Unknown", "url": info["url"]}
+async def _extract(query: str):
+    """
+    Search YouTube and return:
+        {
+            "title": "...",
+            "url": "..."
+        }
+    """
+
+    try:
+        search_query = query
+
+        if not query.startswith(("http://", "https://")):
+            search_query = f"ytsearch1:{query}"
+
+        loop = asyncio.get_running_loop()
+
+        def extract():
+            with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
+                return ydl.extract_info(
+                    search_query,
+                    download=False,
+                )
+
+        info = await loop.run_in_executor(None, extract)
+
+        if not info:
+            raise RuntimeError("No information returned by yt-dlp.")
+
+        # Search results return an entries list
+        if "entries" in info:
+            entries = info.get("entries") or []
+
+            if not entries:
+                raise RuntimeError("No results found.")
+
+            info = entries[0]
+
+        if not info:
+            raise RuntimeError("No video information found.")
+
+        stream_url = info.get("url")
+        title = info.get("title") or "Unknown title"
+
+        if not stream_url:
+            raise RuntimeError(
+                "yt-dlp did not return a playable audio URL."
+            )
+
+        return {
+            "title": title,
+            "url": stream_url,
+        }
+
+    except Exception as error:
+        LOGGER.exception("yt-dlp extraction failed for query: %s", query)
+        raise RuntimeError(
+            f"Could not extract audio from YouTube: {error}"
+        ) from error
+
+
+async def _get_queue(chat_id: int):
+    queue = await db.get_music_queue(chat_id)
+
+    if queue is None:
+        queue = []
+
+    return queue
+
+
+async def _save_queue(chat_id: int, queue):
+    await db.set_music_queue(chat_id, queue)
+
+
+async def _clear_queue(chat_id: int):
+    await db.set_music_queue(chat_id, [])
 
 
 async def _play_next(chat_id: int):
-    queue = QUEUES.get(chat_id, [])
+    queue = await _get_queue(chat_id)
+
     if not queue:
         try:
-            await call.leave_call(chat_id)
+            await CALLS.leave_group_call(chat_id)
         except Exception:
             pass
-        return False
-    track = queue[0]
-    await call.play(chat_id, MediaStream(track["url"]))
-    return True
+        return
 
+    current = queue[0]
 
-@call.on_update(call_filters.stream_end())
-async def stream_end_handler(_, update: StreamEnded):
-    chat_id = update.chat_id
-    queue = QUEUES.get(chat_id, [])
-    if queue:
+    try:
+        await CALLS.play(
+            chat_id,
+            MediaStream(
+                current["url"],
+                audio_parameters=AudioPiped,
+            ),
+        )
+
+        LOGGER.info(
+            "Now playing in %s: %s",
+            chat_id,
+            current.get("title", "Unknown title"),
+        )
+
+    except Exception:
+        LOGGER.exception("Failed to play audio in chat %s", chat_id)
+
+        # Remove failed item and try the next one
         queue.pop(0)
-    if queue:
-        try:
-            await _play_next(chat_id)
-        except Exception:
-            QUEUES[chat_id] = []
-            try:
-                await call.leave_call(chat_id)
-            except Exception:
-                pass
-    else:
-        QUEUES.pop(chat_id, None)
-        try:
-            await call.leave_call(chat_id)
-        except Exception:
-            pass
+        await _save_queue(chat_id, queue)
+
+        await _play_next(chat_id)
 
 
-@Client.on_message(filters.command("play"))
-@gated
-async def play_cmd(_, message: Message):
+# --------------------------------------------------
+# Commands
+# --------------------------------------------------
+
+@Config.APP.on_message(filters.command("play"))
+@admin_only
+async def play_music(client, message: Message):
     if len(message.command) < 2:
-        return await message.reply_text("Usage: /play <song name or link>")
+        return await message.reply_text(
+            "🎵 Usage:\n"
+            "`/play song name or YouTube URL`"
+        )
+
+    query = " ".join(message.command[1:])
+
+    status = await message.reply_text(
+        "🔎 Searching for your song..."
+    )
+
+    try:
+        result = await _extract(query)
+
+        chat_id = message.chat.id
+        queue = await _get_queue(chat_id)
+
+        queue.append(
+            {
+                "title": result["title"],
+                "url": result["url"],
+                "requested_by": message.from_user.id
+                if message.from_user
+                else None,
+            }
+        )
+
+        await _save_queue(chat_id, queue)
+
+        if len(queue) == 1:
+            await _play_next(chat_id)
+
+            await status.edit_text(
+                f"▶️ **Now playing:**\n"
+                f"{result['title']}"
+            )
+        else:
+            await status.edit_text(
+                f"➕ **Added to queue:**\n"
+                f"{result['title']}\n\n"
+                f"📌 Position: `{len(queue)}`"
+            )
+
+    except Exception as error:
+        LOGGER.exception("Play command failed")
+
+        await status.edit_text(
+            "❌ **Could not play this song.**\n\n"
+            f"`{error}`"
+        )
+
+
+@Config.APP.on_message(filters.command("pause"))
+@admin_only
+async def pause_music(client, message: Message):
+    try:
+        await CALLS.pause(message.chat.id)
+        await message.reply_text("⏸️ Music paused.")
+    except Exception as error:
+        LOGGER.exception("Pause failed")
+        await message.reply_text(
+            f"❌ Could not pause music:\n`{error}`"
+        )
+
+
+@Config.APP.on_message(filters.command("resume"))
+@admin_only
+async def resume_music(client, message: Message):
+    try:
+        await CALLS.resume(message.chat.id)
+        await message.reply_text("▶️ Music resumed.")
+    except Exception as error:
+        LOGGER.exception("Resume failed")
+        await message.reply_text(
+            f"❌ Could not resume music:\n`{error}`"
+        )
+
+
+@Config.APP.on_message(filters.command("skip"))
+@admin_only
+async def skip_music(client, message: Message):
     chat_id = message.chat.id
-    queue = QUEUES.setdefault(chat_id, [])
-    if len(queue) >= config.MAX_QUEUE_SIZE:
-        return await message.reply_text(f"❌ Queue limit reached ({config.MAX_QUEUE_SIZE}).")
+    queue = await _get_queue(chat_id)
 
-    query = message.text.split(None, 1)[1].strip()
-    msg = await message.reply_text("🔎 Searching...")
-    try:
-        track = await asyncio.to_thread(_extract, query)
-    except Exception as exc:
-        return await msg.edit_text(f"❌ Couldn't find audio: `{type(exc).__name__}`")
-
-    track["requested_by"] = message.from_user.mention
-    queue.append(track)
-
-    if len(queue) > 1:
-        return await msg.edit_text(f"➕ Queued (#{len(queue)}): **{track['title']}**")
-
-    try:
-        await call.play(chat_id, MediaStream(track["url"]))
-        db.record_song(chat_id, message.from_user.id, track["title"])
-        await msg.edit_text(f"▶️ Playing: **{track['title']}**")
-    except Exception as exc:
-        queue.pop(0)
-        if not queue:
-            QUEUES.pop(chat_id, None)
-        await msg.edit_text(f"❌ Failed to join/play in VC: `{type(exc).__name__}`")
-
-
-@Client.on_message(filters.command("skip"))
-@gated
-async def skip_cmd(_, message: Message):
-    queue = QUEUES.get(message.chat.id, [])
     if not queue:
-        return await message.reply_text("Nothing is playing.")
+        return await message.reply_text(
+            "ℹ️ The music queue is empty."
+        )
+
     queue.pop(0)
+    await _save_queue(chat_id, queue)
+
     if queue:
-        try:
-            await _play_next(message.chat.id)
-            return await message.reply_text("⏭ Skipped. Playing next track.")
-        except Exception:
-            QUEUES.pop(message.chat.id, None)
+        await _play_next(chat_id)
+        await message.reply_text(
+            f"⏭️ Skipped.\n"
+            f"▶️ Now playing: **{queue[0]['title']}**"
+        )
     else:
-        QUEUES.pop(message.chat.id, None)
+        try:
+            await CALLS.leave_group_call(chat_id)
+        except Exception:
+            pass
+
+        await message.reply_text(
+            "⏹️ Queue finished."
+        )
+
+
+@Config.APP.on_message(filters.command("stop"))
+@admin_only
+async def stop_music(client, message: Message):
+    chat_id = message.chat.id
+
+    await _clear_queue(chat_id)
+
     try:
-        await call.leave_call(message.chat.id)
+        await CALLS.leave_group_call(chat_id)
     except Exception:
         pass
-    await message.reply_text("⏭ Skipped. Queue is empty.")
+
+    await message.reply_text(
+        "⏹️ Stopped music and cleared the queue."
+    )
 
 
-@Client.on_message(filters.command("stop"))
-@gated
-async def stop_cmd(_, message: Message):
-    QUEUES.pop(message.chat.id, None)
-    try:
-        await call.leave_call(message.chat.id)
-    except Exception:
-        pass
-    await message.reply_text("⏹ Stopped and left the voice chat.")
+@Config.APP.on_message(filters.command("queue"))
+async def show_queue(client, message: Message):
+    queue = await _get_queue(message.chat.id)
 
-
-@Client.on_message(filters.command("pause"))
-@gated
-async def pause_cmd(_, message: Message):
-    try:
-        await call.pause_stream(message.chat.id)
-        await message.reply_text("⏸ Paused.")
-    except Exception as exc:
-        await message.reply_text(f"❌ Cannot pause: `{type(exc).__name__}`")
-
-
-@Client.on_message(filters.command("resume"))
-@gated
-async def resume_cmd(_, message: Message):
-    try:
-        await call.resume_stream(message.chat.id)
-        await message.reply_text("▶️ Resumed.")
-    except Exception as exc:
-        await message.reply_text(f"❌ Cannot resume: `{type(exc).__name__}`")
-
-
-@Client.on_message(filters.command("queue"))
-@gated
-async def queue_cmd(_, message: Message):
-    queue = QUEUES.get(message.chat.id, [])
     if not queue:
-        return await message.reply_text("Queue is empty.")
-    lines = [f"{i}. **{t['title']}** — {t['requested_by']}" for i, t in enumerate(queue, 1)]
-    await message.reply_text("**Queue:**\n" + "\n".join(lines))
+        return await message.reply_text(
+            "📭 The music queue is empty."
+        )
+
+    text = "🎶 **Music Queue:**\n\n"
+
+    for index, item in enumerate(queue, start=1):
+        title = item.get("title", "Unknown title")
+
+        if index == 1:
+            text += f"▶️ `{index}.` **{title}**\n"
+        else:
+            text += f"`{index}.` {title}\n"
+
+    await message.reply_text(text)
+
+
+# --------------------------------------------------
+# Voice chat events
+# --------------------------------------------------
+
+@CALLS.on_stream_end()
+async def stream_end_handler(_, update):
+    chat_id = update.chat_id
+
+    queue = await _get_queue(chat_id)
+
+    if queue:
+        queue.pop(0)
+        await _save_queue(chat_id, queue)
+
+    if queue:
+        await _play_next(chat_id)
+    else:
+        try:
+            await CALLS.leave_group_call(chat_id)
+        except Exception:
+            pass
+
+
+# --------------------------------------------------
+# Startup
+# --------------------------------------------------
+
+async def start_music():
+    try:
+        await CALLS.start()
+        LOGGER.info("Music player started successfully.")
+    except Exception:
+        LOGGER.exception("Failed to start music player.")
