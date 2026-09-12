@@ -4,6 +4,7 @@
 data.db
 data.db-shm
 data.db-wal
+cookies.txt
 __pycache__/
 *.pyc
 *.log
