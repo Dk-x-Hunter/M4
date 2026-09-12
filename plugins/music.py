@@ -21,23 +21,28 @@ logger = logging.getLogger(__name__)
 YDL_OPTS = {
     "format": "bestaudio[ext=m4a]/bestaudio/best",
     "noplaylist": True,
-    "quiet": True,
-    "no_warnings": True,
+    "quiet": False,
+    "no_warnings": False,
     "default_search": "ytsearch1",
     "socket_timeout": 30,
-    "retries": 3,
-    "fragment_retries": 3,
-    "extractor_retries": 3,
+    "retries": 5,
+    "fragment_retries": 5,
+    "extractor_retries": 5,
     "skip_unavailable_fragments": True,
+    # YouTube-specific options to bypass bot detection
     "extractor_args": {
         "youtube": {
-            "player_client": ["android", "web"],
+            "player_client": ["web"],
+            "player_skip": ["js", "configs"],
         }
     },
+    # Additional headers to avoid being detected as a bot
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    },
+    # Disable DASH to simplify extraction
+    "youtube_include_dash_manifest": False,
 }
-
-# Don't use cookies file - it causes issues
-# If you need cookies, manually export from browser in Netscape format
 
 
 # --------------------------------------------------
@@ -104,10 +109,10 @@ async def _extract(query: str):
 
         def extract():
             with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-                return ydl.extract_info(
-                    search_query,
-                    download=False,
-                )
+                logger.info("Starting yt-dlp extraction...")
+                info = ydl.extract_info(search_query, download=False)
+                logger.info("yt-dlp extraction completed")
+                return info
 
         info = await loop.run_in_executor(None, extract)
 
