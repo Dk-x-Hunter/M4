@@ -7,8 +7,7 @@ import yt_dlp
 from pyrogram import filters
 from pyrogram.types import Message
 from pytgcalls import PyTgCalls
-from pytgcalls.types import AudioPiped, MediaStream
-from pytgcalls.types.input_stream import AudioVideoPiped
+from pytgcalls.types import MediaStream
 
 from core.config import Config
 from core.mongo import db
@@ -40,8 +39,6 @@ YDL_OPTS = {
     },
 }
 
-# Use cookies only when the file actually exists.
-# This prevents yt-dlp from crashing if cookies.txt is absent.
 if os.path.isfile(COOKIE_FILE):
     YDL_OPTS["cookiefile"] = COOKIE_FILE
 
@@ -63,26 +60,24 @@ def admin_only(func):
         if not message.from_user:
             return
 
-        if message.chat and message.chat.type:
-            user_id = message.from_user.id
+        user_id = message.from_user.id
 
-            # Allow configured owner
-            if user_id == Config.OWNER_ID:
-                return await func(client, message, *args, **kwargs)
+        if user_id == Config.OWNER_ID:
+            return await func(client, message, *args, **kwargs)
 
-            # Check database admins
-            try:
-                admins = await db.get_admins(message.chat.id)
+        try:
+            admins = await db.get_admins(message.chat.id)
 
-                if user_id not in admins:
-                    return await message.reply_text(
-                        "❌ You are not allowed to use this command."
-                    )
-            except Exception:
-                LOGGER.exception("Failed to check admin permissions")
+            if user_id not in admins:
                 return await message.reply_text(
-                    "⚠️ Could not verify your permissions."
+                    "❌ You are not allowed to use this command."
                 )
+
+        except Exception:
+            LOGGER.exception("Failed to check admin permissions")
+            return await message.reply_text(
+                "⚠️ Could not verify your permissions."
+            )
 
         return await func(client, message, *args, **kwargs)
 
@@ -91,7 +86,9 @@ def admin_only(func):
 
 async def _extract(query: str):
     """
-    Search YouTube and return:
+    Extract an audio stream from YouTube.
+
+    Returns:
         {
             "title": "...",
             "url": "..."
@@ -118,7 +115,6 @@ async def _extract(query: str):
         if not info:
             raise RuntimeError("No information returned by yt-dlp.")
 
-        # Search results return an entries list
         if "entries" in info:
             entries = info.get("entries") or []
 
@@ -144,7 +140,10 @@ async def _extract(query: str):
         }
 
     except Exception as error:
-        LOGGER.exception("yt-dlp extraction failed for query: %s", query)
+        LOGGER.exception(
+            "yt-dlp extraction failed for query: %s",
+            query,
+        )
         raise RuntimeError(
             f"Could not extract audio from YouTube: {error}"
         ) from error
@@ -180,12 +179,11 @@ async def _play_next(chat_id: int):
     current = queue[0]
 
     try:
+        # Correct PyTgCalls 2.2.8 usage.
+        # AudioPiped is not available in this version.
         await CALLS.play(
             chat_id,
-            MediaStream(
-                current["url"],
-                audio_parameters=AudioPiped,
-            ),
+            MediaStream(current["url"]),
         )
 
         LOGGER.info(
@@ -195,9 +193,11 @@ async def _play_next(chat_id: int):
         )
 
     except Exception:
-        LOGGER.exception("Failed to play audio in chat %s", chat_id)
+        LOGGER.exception(
+            "Failed to play audio in chat %s",
+            chat_id,
+        )
 
-        # Remove failed item and try the next one
         queue.pop(0)
         await _save_queue(chat_id, queue)
 
@@ -233,9 +233,11 @@ async def play_music(client, message: Message):
             {
                 "title": result["title"],
                 "url": result["url"],
-                "requested_by": message.from_user.id
-                if message.from_user
-                else None,
+                "requested_by": (
+                    message.from_user.id
+                    if message.from_user
+                    else None
+                ),
             }
         )
 
@@ -306,6 +308,7 @@ async def skip_music(client, message: Message):
 
     if queue:
         await _play_next(chat_id)
+
         await message.reply_text(
             f"⏭️ Skipped.\n"
             f"▶️ Now playing: **{queue[0]['title']}**"
