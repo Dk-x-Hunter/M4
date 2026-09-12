@@ -18,8 +18,6 @@ logger = logging.getLogger(__name__)
 # YouTube / yt-dlp configuration
 # --------------------------------------------------
 
-COOKIE_FILE = "cookies.txt"
-
 YDL_OPTS = {
     "format": "bestaudio[ext=m4a]/bestaudio/best",
     "noplaylist": True,
@@ -38,20 +36,8 @@ YDL_OPTS = {
     },
 }
 
-# Only use cookies if file exists and is valid
-if os.path.isfile(COOKIE_FILE):
-    try:
-        # Try to read and validate the cookies file
-        with open(COOKIE_FILE, 'r') as f:
-            content = f.read().strip()
-            # Basic validation: Netscape format files should have a header or tab-separated values
-            if content and ('#' in content or '\t' in content):
-                YDL_OPTS["cookiefile"] = COOKIE_FILE
-                logger.info("Valid cookies.txt loaded")
-            else:
-                logger.warning("cookies.txt exists but appears invalid - skipping")
-    except Exception as e:
-        logger.warning(f"Could not load cookies.txt: {e} - skipping")
+# Don't use cookies file - it causes issues
+# If you need cookies, manually export from browser in Netscape format
 
 
 # --------------------------------------------------
