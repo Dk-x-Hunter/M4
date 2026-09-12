@@ -6,14 +6,13 @@ from functools import wraps
 import yt_dlp
 from pyrogram import filters
 from pyrogram.types import Message
-from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
 
-from core.config import Config
-from core.mongo import db
+import client
+import db
+import config
 
-
-LOGGER = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------
 # YouTube / yt-dlp configuration
@@ -47,7 +46,7 @@ if os.path.isfile(COOKIE_FILE):
 # Global variables
 # --------------------------------------------------
 
-CALLS = PyTgCalls(Config.APP)
+CALLS = client.call
 
 
 # --------------------------------------------------
@@ -56,30 +55,30 @@ CALLS = PyTgCalls(Config.APP)
 
 def admin_only(func):
     @wraps(func)
-    async def wrapper(client, message: Message, *args, **kwargs):
+    async def wrapper(c, message: Message, *args, **kwargs):
         if not message.from_user:
             return
 
         user_id = message.from_user.id
 
-        if user_id == Config.OWNER_ID:
-            return await func(client, message, *args, **kwargs)
+        if user_id == config.OWNER_ID:
+            return await func(c, message, *args, **kwargs)
 
         try:
-            admins = await db.get_admins(message.chat.id)
-
-            if user_id not in admins:
+            # Check if user is admin in the chat
+            member = await c.get_chat_member(message.chat.id, user_id)
+            if not member.privileges:
                 return await message.reply_text(
                     "❌ You are not allowed to use this command."
                 )
 
         except Exception:
-            LOGGER.exception("Failed to check admin permissions")
+            logger.exception("Failed to check admin permissions")
             return await message.reply_text(
                 "⚠️ Could not verify your permissions."
             )
 
-        return await func(client, message, *args, **kwargs)
+        return await func(c, message, *args, **kwargs)
 
     return wrapper
 
@@ -101,6 +100,8 @@ async def _extract(query: str):
         if not query.startswith(("http://", "https://")):
             search_query = f"ytsearch1:{query}"
 
+        logger.info("Extracting audio for query: %s", query)
+        
         loop = asyncio.get_running_loop()
 
         def extract():
@@ -134,13 +135,15 @@ async def _extract(query: str):
                 "yt-dlp did not return a playable audio URL."
             )
 
+        logger.info("Successfully extracted: %s", title)
+
         return {
             "title": title,
             "url": stream_url,
         }
 
     except Exception as error:
-        LOGGER.exception(
+        logger.exception(
             "yt-dlp extraction failed for query: %s",
             query,
         )
@@ -150,7 +153,7 @@ async def _extract(query: str):
 
 
 async def _get_queue(chat_id: int):
-    queue = await db.get_music_queue(chat_id)
+    queue = await db.get_queue(chat_id)
 
     if queue is None:
         queue = []
@@ -159,11 +162,11 @@ async def _get_queue(chat_id: int):
 
 
 async def _save_queue(chat_id: int, queue):
-    await db.set_music_queue(chat_id, queue)
+    await db.set_queue(chat_id, queue)
 
 
 async def _clear_queue(chat_id: int):
-    await db.set_music_queue(chat_id, [])
+    await db.set_queue(chat_id, [])
 
 
 async def _play_next(chat_id: int):
@@ -179,21 +182,26 @@ async def _play_next(chat_id: int):
     current = queue[0]
 
     try:
-        # Correct PyTgCalls 2.2.8 usage.
-        # AudioPiped is not available in this version.
+        logger.info(
+            "Playing in chat %s: %s",
+            chat_id,
+            current.get("title", "Unknown title"),
+        )
+        
+        # Use MediaStream for PyTgCalls 2.2.8
         await CALLS.play(
             chat_id,
             MediaStream(current["url"]),
         )
 
-        LOGGER.info(
+        logger.info(
             "Now playing in %s: %s",
             chat_id,
             current.get("title", "Unknown title"),
         )
 
     except Exception:
-        LOGGER.exception(
+        logger.exception(
             "Failed to play audio in chat %s",
             chat_id,
         )
@@ -208,9 +216,9 @@ async def _play_next(chat_id: int):
 # Commands
 # --------------------------------------------------
 
-@Config.APP.on_message(filters.command("play"))
+@client.app.on_message(filters.command("play"))
 @admin_only
-async def play_music(client, message: Message):
+async def play_music(c, message: Message):
     if len(message.command) < 2:
         return await message.reply_text(
             "🎵 Usage:\n"
@@ -258,7 +266,7 @@ async def play_music(client, message: Message):
             )
 
     except Exception as error:
-        LOGGER.exception("Play command failed")
+        logger.exception("Play command failed")
 
         await status.edit_text(
             "❌ **Could not play this song.**\n\n"
@@ -266,35 +274,35 @@ async def play_music(client, message: Message):
         )
 
 
-@Config.APP.on_message(filters.command("pause"))
+@client.app.on_message(filters.command("pause"))
 @admin_only
-async def pause_music(client, message: Message):
+async def pause_music(c, message: Message):
     try:
         await CALLS.pause(message.chat.id)
         await message.reply_text("⏸️ Music paused.")
     except Exception as error:
-        LOGGER.exception("Pause failed")
+        logger.exception("Pause failed")
         await message.reply_text(
             f"❌ Could not pause music:\n`{error}`"
         )
 
 
-@Config.APP.on_message(filters.command("resume"))
+@client.app.on_message(filters.command("resume"))
 @admin_only
-async def resume_music(client, message: Message):
+async def resume_music(c, message: Message):
     try:
         await CALLS.resume(message.chat.id)
         await message.reply_text("▶️ Music resumed.")
     except Exception as error:
-        LOGGER.exception("Resume failed")
+        logger.exception("Resume failed")
         await message.reply_text(
             f"❌ Could not resume music:\n`{error}`"
         )
 
 
-@Config.APP.on_message(filters.command("skip"))
+@client.app.on_message(filters.command("skip"))
 @admin_only
-async def skip_music(client, message: Message):
+async def skip_music(c, message: Message):
     chat_id = message.chat.id
     queue = await _get_queue(chat_id)
 
@@ -324,9 +332,9 @@ async def skip_music(client, message: Message):
         )
 
 
-@Config.APP.on_message(filters.command("stop"))
+@client.app.on_message(filters.command("stop"))
 @admin_only
-async def stop_music(client, message: Message):
+async def stop_music(c, message: Message):
     chat_id = message.chat.id
 
     await _clear_queue(chat_id)
@@ -341,8 +349,8 @@ async def stop_music(client, message: Message):
     )
 
 
-@Config.APP.on_message(filters.command("queue"))
-async def show_queue(client, message: Message):
+@client.app.on_message(filters.command("queue"))
+async def show_queue(c, message: Message):
     queue = await _get_queue(message.chat.id)
 
     if not queue:
@@ -384,15 +392,3 @@ async def stream_end_handler(_, update):
             await CALLS.leave_group_call(chat_id)
         except Exception:
             pass
-
-
-# --------------------------------------------------
-# Startup
-# --------------------------------------------------
-
-async def start_music():
-    try:
-        await CALLS.start()
-        LOGGER.info("Music player started successfully.")
-    except Exception:
-        LOGGER.exception("Failed to start music player.")
