@@ -369,26 +369,3 @@ async def show_queue(c, message: Message):
             text += f"`{index}.` {title}\n"
 
     await message.reply_text(text)
-
-
-# --------------------------------------------------
-# Voice chat events
-# --------------------------------------------------
-
-@CALLS.on_stream_end()
-async def stream_end_handler(_, update):
-    chat_id = update.chat_id
-
-    queue = await _get_queue(chat_id)
-
-    if queue:
-        queue.pop(0)
-        await _save_queue(chat_id, queue)
-
-    if queue:
-        await _play_next(chat_id)
-    else:
-        try:
-            await CALLS.leave_group_call(chat_id)
-        except Exception:
-            pass
