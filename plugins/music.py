@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import tempfile
 from functools import wraps
 
 import yt_dlp
@@ -29,8 +30,6 @@ YDL_OPTS = {
     "fragment_retries": 5,
     "extractor_retries": 5,
     "skip_unavailable_fragments": True,
-    # Auto-extract cookies from Chrome
-    "cookiesfrombrowser": ["chrome"],
     # YouTube-specific options to bypass bot detection
     "extractor_args": {
         "youtube": {
@@ -45,6 +44,23 @@ YDL_OPTS = {
     # Disable DASH to simplify extraction
     "youtube_include_dash_manifest": False,
 }
+
+# Load YouTube cookies from environment variable if available
+YOUTUBE_COOKIES = os.getenv("YOUTUBE_COOKIES")
+
+if YOUTUBE_COOKIES:
+    try:
+        # Create a temporary cookies file from the environment variable
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+            f.write(YOUTUBE_COOKIES)
+            cookies_file = f.name
+        
+        YDL_OPTS["cookiefile"] = cookies_file
+        logger.info("YouTube cookies loaded from YOUTUBE_COOKIES environment variable")
+    except Exception as e:
+        logger.warning(f"Failed to load YouTube cookies from environment variable: {e}")
+else:
+    logger.warning("YOUTUBE_COOKIES environment variable not set. YouTube downloads may fail if authentication is required.")
 
 
 # --------------------------------------------------
@@ -111,7 +127,7 @@ async def _extract(query: str):
 
         def extract():
             with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
-                logger.info("Starting yt-dlp extraction with Chrome cookies...")
+                logger.info("Starting yt-dlp extraction...")
                 info = ydl.extract_info(search_query, download=False)
                 logger.info("yt-dlp extraction completed")
                 return info
