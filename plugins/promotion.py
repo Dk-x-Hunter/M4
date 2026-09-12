@@ -2,28 +2,29 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
-from pyrogram import Client, filters
+from pyrogram import filters
 from pyrogram.types import Message
 
+import client
 import config
 import db
 
 
 def owner_only(func):
     @wraps(func)
-    async def wrapper(client, message: Message):
+    async def wrapper(c, message: Message):
         if not message.from_user or message.from_user.id != config.OWNER_ID:
             return await message.reply_text("🚫 Owner only.")
-        return await func(client, message)
+        return await func(c, message)
     return wrapper
 
 
-async def _broadcast(client: Client, text: str):
+async def _broadcast(c, text: str):
     chat_ids = db.get_db()["authorized_chats"]
     sent, failed = [], []
     for chat_id in chat_ids:
         try:
-            await client.send_message(chat_id, text)
+            await c.send_message(chat_id, text)
             sent.append(chat_id)
         except Exception:
             failed.append(chat_id)
@@ -31,18 +32,18 @@ async def _broadcast(client: Client, text: str):
     return sent, failed
 
 
-@Client.on_message(filters.command("promote"))
+@client.app.on_message(filters.command("promote"))
 @owner_only
-async def promote_cmd(client, message: Message):
+async def promote_cmd(c, message: Message):
     if len(message.command) < 2:
         return await message.reply_text("Usage: /promote <message>")
-    sent, failed = await _broadcast(client, message.text.split(None, 1)[1])
+    sent, failed = await _broadcast(c, message.text.split(None, 1)[1])
     await message.reply_text(f"✅ Sent: {len(sent)} | Failed: {len(failed)}")
 
 
-@Client.on_message(filters.command("promote_gc"))
+@client.app.on_message(filters.command("promote_gc"))
 @owner_only
-async def promote_gc_cmd(client, message: Message):
+async def promote_gc_cmd(c, message: Message):
     if len(message.command) < 3:
         return await message.reply_text("Usage: /promote_gc <chat_id> <message>")
     try:
@@ -51,7 +52,7 @@ async def promote_gc_cmd(client, message: Message):
         return await message.reply_text("❌ Chat ID must be numeric.")
     text = message.text.split(None, 2)[2]
     try:
-        await client.send_message(chat_id, text)
+        await c.send_message(chat_id, text)
     except Exception as exc:
         db.record_targeted_promotion(chat_id, text, False)
         return await message.reply_text(f"❌ Failed: `{type(exc).__name__}`")
@@ -59,9 +60,9 @@ async def promote_gc_cmd(client, message: Message):
     await message.reply_text("✅ Promotion sent.")
 
 
-@Client.on_message(filters.command("promote_media"))
+@client.app.on_message(filters.command("promote_media"))
 @owner_only
-async def promote_media_cmd(client, message: Message):
+async def promote_media_cmd(c, message: Message):
     source = message.reply_to_message
     if not source:
         return await message.reply_text("Reply to media with /promote_media [caption].")
@@ -77,7 +78,7 @@ async def promote_media_cmd(client, message: Message):
     await message.reply_text(f"✅ Sent: {len(sent)} | Failed: {len(failed)}")
 
 
-@Client.on_message(filters.command("schedulepromo"))
+@client.app.on_message(filters.command("schedulepromo"))
 @owner_only
 async def schedulepromo_cmd(_, message: Message):
     if len(message.command) < 3:
@@ -94,15 +95,15 @@ async def schedulepromo_cmd(_, message: Message):
     await message.reply_text(f"🗓 Scheduled for {run_at:%Y-%m-%d %H:%M %Z}.")
 
 
-async def scheduler(client: Client):
+async def scheduler(c):
     while True:
         try:
             now = datetime.now(timezone.utc).isoformat()
             due = db.get_due_promotions(now)
             for item in due:
-                sent, failed = await _broadcast(client, item["message"])
+                sent, failed = await _broadcast(c, item["message"])
                 try:
-                    await client.send_message(config.OWNER_ID, f"🗓 Scheduled promotion: sent {len(sent)}, failed {len(failed)}")
+                    await c.send_message(config.OWNER_ID, f"🗓 Scheduled promotion: sent {len(sent)}, failed {len(failed)}")
                 except Exception:
                     pass
             await asyncio.sleep(config.PROMOTION_INTERVAL)
@@ -112,7 +113,7 @@ async def scheduler(client: Client):
             await asyncio.sleep(config.PROMOTION_INTERVAL)
 
 
-@Client.on_message(filters.command("stats"))
+@client.app.on_message(filters.command("stats"))
 @owner_only
 async def stats_cmd(_, message: Message):
     stats = db.get_stats()
@@ -128,7 +129,7 @@ async def stats_cmd(_, message: Message):
     )
 
 
-@Client.on_message(filters.command("leaderboard"))
+@client.app.on_message(filters.command("leaderboard"))
 async def leaderboard_cmd(_, message: Message):
     rows = db.get_leaderboard()
     if not rows:
