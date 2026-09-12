@@ -22,3 +22,8 @@ for value in os.getenv("SUDO_USERS", "").split(","):
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 MAX_QUEUE_SIZE = max(1, int(os.getenv("MAX_QUEUE_SIZE", "50")))
 PROMOTION_INTERVAL = max(5, int(os.getenv("PROMOTION_INTERVAL", "15")))
+
+# Bot Mode: 'full' for music bot, 'broadcast' for broadcast only, 'assistant' for assistant mode
+BOT_MODE = os.getenv("BOT_MODE", "full").lower()
+if BOT_MODE not in ["full", "broadcast", "assistant"]:
+    BOT_MODE = "full"
