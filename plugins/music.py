@@ -38,8 +38,20 @@ YDL_OPTS = {
     },
 }
 
+# Only use cookies if file exists and is valid
 if os.path.isfile(COOKIE_FILE):
-    YDL_OPTS["cookiefile"] = COOKIE_FILE
+    try:
+        # Try to read and validate the cookies file
+        with open(COOKIE_FILE, 'r') as f:
+            content = f.read().strip()
+            # Basic validation: Netscape format files should have a header or tab-separated values
+            if content and ('#' in content or '\t' in content):
+                YDL_OPTS["cookiefile"] = COOKIE_FILE
+                logger.info("Valid cookies.txt loaded")
+            else:
+                logger.warning("cookies.txt exists but appears invalid - skipping")
+    except Exception as e:
+        logger.warning(f"Could not load cookies.txt: {e} - skipping")
 
 
 # --------------------------------------------------
